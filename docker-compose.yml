@@ -1,0 +1,27 @@
+version: '3.9'
+
+services:
+  cyride-notifier:
+    build: .
+    container_name: cyride-notifier
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      # Persist the SQLite database across container restarts/rebuilds
+      - cyride-data:/data
+    environment:
+      - DATA_DIR=/data
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/schedule"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  cyride-data:
+    driver: local
