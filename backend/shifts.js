@@ -1,9 +1,10 @@
-// shifts.js — fetch, filter, and compare CyRide open shifts
+// shifts.js — fetch, filter, and compare CyRide open shifts against Google Calendar
 const axios = require('axios');
 const ical = require('node-ical');
 const { fromZonedTime } = require('date-fns-tz');
 
 const CYRIDE_URL = process.env.CYRIDE_JSON_URL || 'https://cyride.net/sync/open.json';
+const TZ = process.env.TZ || 'America/Chicago';
 
 // ── Fetch raw JSON from CyRide ────────────────────────────────────────────────
 
@@ -14,92 +15,122 @@ async function fetchShifts() {
 
 // ── ICS Calendar Handling ─────────────────────────────────────────────────────
 
-async function fetchIcsEvents(icsUrl) {
-  if (!icsUrl) return [];
+async function fetchIcsEvents() {
+  const icsUrl = process.env.ICS_URL;
+  if (!icsUrl) {
+    console.warn("[shifts] Warning: ICS_URL not set in .env! Assuming open availability.");
+    return [];
+  }
+
   try {
     const data = await ical.async.fromURL(icsUrl);
     const events = [];
     const now = new Date();
-    const nextWeek = new Date(now.getTime() + 10 * 24 * 60 * 60 * 1000); // 10 days out
+    
+    // Look back 1 day and forward 14 days to handle timezone/overnight edge cases safely
+    const rangeStart = new Date(now.getTime() - 24 * 3600 * 1000);
+    const rangeEnd = new Date(now.getTime() + 14 * 24 * 3600 * 1000);
 
     for (const k in data) {
       const ev = data[k];
       if (ev.type !== 'VEVENT') continue;
-      // Skip events explicitly marked as "Free" (Transparent)
+      
+      // Skip events explicitly marked as "Free" in Google Calendar
       if (ev.transparency === 'TRANSPARENT') continue;
+
+      const summary = ev.summary || 'Busy';
 
       if (ev.rrule) {
         // Expand recurring events
-        const dates = ev.rrule.between(now, nextWeek);
+        const dates = ev.rrule.between(rangeStart, rangeEnd);
         const duration = ev.end.getTime() - ev.start.getTime();
         for (const date of dates) {
           events.push({
             start: date,
-            end: new Date(date.getTime() + duration)
+            end: new Date(date.getTime() + duration),
+            summary
           });
         }
       } else {
-        events.push({ start: ev.start, end: ev.end });
+        // Standard one-off event
+        if (ev.end > rangeStart && ev.start < rangeEnd) {
+          events.push({ start: ev.start, end: ev.end, summary });
+        }
       }
     }
+    
+    // Sort events chronologically
+    events.sort((a, b) => a.start - b.start);
     return events;
   } catch (e) {
     console.error("[shifts] Failed to fetch/parse ICS:", e.message);
-    return []; // Fail open: if calendar is broken, rely on base availability
+    return []; // Fail open: if calendar is temporarily broken, don't crash
   }
+}
+
+// Format the calendar events nicely for the frontend view
+async function getGroupedCalendar() {
+  const events = await fetchIcsEvents();
+  const grouped = {};
+  
+  function formatDateNative(date) {
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric', timeZone: TZ
+    });
+  }
+  function formatTimeNative(date) {
+    return date.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', timeZone: TZ
+    });
+  }
+
+  // Pre-populate the next 7 days so empty days still show up in the UI
+  const now = new Date();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(now.getTime() + i * 24 * 3600 * 1000);
+    grouped[formatDateNative(d)] = [];
+  }
+
+  for (const ev of events) {
+    const dateStr = formatDateNative(ev.start);
+    // Only add to group if it falls within the next 7 days we prepared
+    if (grouped[dateStr]) {
+      grouped[dateStr].push({
+        startStr: formatTimeNative(ev.start),
+        endStr: formatTimeNative(ev.end),
+        summary: ev.summary
+      });
+    }
+  }
+  return grouped;
 }
 
 // ── Time & Date Helpers ──────────────────────────────────────────────────────
 
-function timeToMinutes(hhmm) {
-  if (!hhmm) return null;
-  const [h, m] = hhmm.split(':').map(Number);
-  let mins = h * 60 + m;
-  if (mins < 6 * 60) mins += 24 * 60; // pre-6am belongs to next "bus day"
-  return mins - 6 * 60; 
-}
-
 function buildShiftDate(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
-  const tz = process.env.TZ || 'America/Chicago';
   const [y, mo, d] = dateStr.split('-').map(Number);
   let [h, m] = timeStr.split(':').map(Number);
-  let isNextDay = h < 6;
+  let isNextDay = h < 6; // Times before 6AM roll over to the next day's morning
 
   const pad = (n) => String(n).padStart(2, '0');
   const localIso = `${y}-${pad(mo)}-${pad(d)}T${pad(h)}:${pad(m)}:00`;
   
-  let dateObj = fromZonedTime(localIso, tz);
+  let dateObj = fromZonedTime(localIso, TZ);
   if (isNextDay) {
     dateObj = new Date(dateObj.getTime() + 24 * 60 * 60 * 1000);
   }
   return dateObj;
 }
 
-// ── Filter shifts by user schedule ───────────────────────────────────────────
+// ── Filter shifts by Google Calendar ─────────────────────────────────────────
 
-function shiftFitsSchedule(shift, daySchedule, icsEvents) {
+function shiftFitsSchedule(shift, icsEvents) {
   if (!shift.driver || shift.driver !== '**OPEN**') return false;
-  if (shift.priority >= 3) return false;
+  if (shift.priority >= 3) return false; // Ignore internal placeholders
   if (!shift.start || !shift.end || !shift.date) return false;
-  if (!daySchedule || !daySchedule.enabled) return false;
 
-  const windows = daySchedule.windows || [];
-  if (windows.length === 0) return false;
-
-  const shiftStartMins = timeToMinutes(shift.start);
-  const shiftEndMins   = timeToMinutes(shift.end);
-
-  // 1. Check if it fits the manual availability window
-  const fitsWindow = windows.some(w => {
-    const wStart = timeToMinutes(w.start);
-    const wEnd   = timeToMinutes(w.end);
-    return shiftStartMins >= wStart && shiftEndMins <= wEnd;
-  });
-
-  if (!fitsWindow) return false;
-
-  // 2. If ICS events exist, ensure there are no overlapping busy blocks
+  // If ICS events exist, ensure there are no overlapping busy blocks
   if (icsEvents && icsEvents.length > 0) {
     const shiftStart = buildShiftDate(shift.date, shift.start);
     const shiftEnd = buildShiftDate(shift.date, shift.end);
@@ -107,30 +138,27 @@ function shiftFitsSchedule(shift, daySchedule, icsEvents) {
     if (!shiftStart || !shiftEnd) return false;
 
     const hasConflict = icsEvents.some(ev => {
-      // standard overlap formula: (StartA < EndB) and (EndA > StartB)
+      // Conflict formula: Shift starts BEFORE Event ends, AND Shift ends AFTER Event starts
       return shiftStart < ev.end && shiftEnd > ev.start;
     });
 
     if (hasConflict) return false; // Calendar says busy!
   }
 
-  return true;
+  return true; // No calendar conflicts found
 }
 
-// ── Get next 7 days of open shifts filtered by user schedule ─────────────────
+// ── Get next 7 days of open shifts filtered by calendar ──────────────────────
 
-async function getFilteredShifts(data, schedule) {
+async function getFilteredShifts(data) {
   const days = data.days || {};
   const result = {}; 
-  
-  // Fetch calendar if provided
-  const icsEvents = await fetchIcsEvents(schedule.icsUrl);
+  const icsEvents = await fetchIcsEvents();
 
-  for (const [dayKey, dayData] of Object.entries(days)) {
-    const daySchedule = schedule[dayKey.toLowerCase()] || schedule[dayKey];
+  for (const [, dayData] of Object.entries(days)) {
     const label = `${dayData.name} — ${dayData.date}`;
     const filtered = (dayData.signups || []).filter(s =>
-      shiftFitsSchedule(s, daySchedule, icsEvents)
+      shiftFitsSchedule(s, icsEvents)
     );
     if (filtered.length > 0) {
       result[label] = filtered;
@@ -142,17 +170,15 @@ async function getFilteredShifts(data, schedule) {
 
 // ── Detect new shifts (not previously seen) ───────────────────────────────────
 
-async function getNewShifts(data, schedule, { isSeen }) {
+async function getNewShifts(data, { isSeen }) {
   const days = data.days || {};
   const result = {}; 
+  const icsEvents = await fetchIcsEvents();
 
-  const icsEvents = await fetchIcsEvents(schedule.icsUrl);
-
-  for (const [dayKey, dayData] of Object.entries(days)) {
-    const daySchedule = schedule[dayKey.toLowerCase()] || schedule[dayKey];
+  for (const [, dayData] of Object.entries(days)) {
     const label = `${dayData.name} — ${dayData.date}`;
     const newOnes = (dayData.signups || []).filter(s => {
-      if (!shiftFitsSchedule(s, daySchedule, icsEvents)) return false;
+      if (!shiftFitsSchedule(s, icsEvents)) return false;
       const id = `${s.date}|${s.run}`;
       return !isSeen(id);
     });
@@ -177,4 +203,10 @@ function markAllSeen(data, { markSeen }) {
   }
 }
 
-module.exports = { fetchShifts, getFilteredShifts, getNewShifts, markAllSeen };
+module.exports = { 
+  fetchShifts, 
+  getFilteredShifts, 
+  getNewShifts, 
+  markAllSeen, 
+  getGroupedCalendar 
+};

@@ -23,27 +23,21 @@ app.use(express.static(path.join(__dirname, '../frontend/dist')));
 //  API ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /api/schedule — return current schedule config
-app.get('/api/schedule', (req, res) => {
-  res.json(db.getSchedule());
-});
-
-// POST /api/schedule — save schedule config
-app.post('/api/schedule', (req, res) => {
+// GET /api/calendar — return parsed Google Calendar events for UI
+app.get('/api/calendar', async (req, res) => {
   try {
-    db.saveSchedule(req.body);
-    res.json({ ok: true });
+    const calendarData = await shifts.getGroupedCalendar();
+    res.json(calendarData);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// GET /api/shifts — live preview of matching shifts
+// GET /api/shifts — live preview of matching non-conflicting shifts
 app.get('/api/shifts', async (req, res) => {
   try {
-    const data     = await shifts.fetchShifts();
-    const schedule = db.getSchedule();
-    const filtered = await shifts.getFilteredShifts(data, schedule);
+    const data = await shifts.fetchShifts();
+    const filtered = await shifts.getFilteredShifts(data);
     res.json(filtered);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -71,9 +65,8 @@ app.get('*', (req, res) => {
 
 async function sendDailyDigest() {
   console.log('[cron] Running daily digest...');
-  const data     = await shifts.fetchShifts();
-  const schedule = db.getSchedule();
-  const filtered = await shifts.getFilteredShifts(data, schedule);
+  const data = await shifts.fetchShifts();
+  const filtered = await shifts.getFilteredShifts(data);
 
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', {
@@ -91,11 +84,10 @@ async function sendDailyDigest() {
 async function checkNewShifts() {
   console.log('[cron] Checking for new shifts...');
   try {
-    const data     = await shifts.fetchShifts();
-    const schedule = db.getSchedule();
+    const data = await shifts.fetchShifts();
 
-    const newOnes = await shifts.getNewShifts(data, schedule, db);
-    const count   = Object.values(newOnes).reduce((n, arr) => n + arr.length, 0);
+    const newOnes = await shifts.getNewShifts(data, db);
+    const count = Object.values(newOnes).reduce((n, arr) => n + arr.length, 0);
 
     if (count > 0) {
       console.log(`[cron] Found ${count} new shift(s), sending email...`);
@@ -143,6 +135,7 @@ app.listen(PORT, () => {
   console.log(`\n🚌 CyRide Notifier running on http://localhost:${PORT}`);
   console.log(`   Recipient:     ${process.env.RECIPIENT_EMAIL}`);
   console.log(`   Sending from:  ${process.env.ZOHO_FROM_EMAIL}`);
+  console.log(`   ICS Calendar:  ${process.env.ICS_URL ? 'Configured' : 'MISSING!'}`);
   console.log(`   Digest at:     ${process.env.DAILY_DIGEST_TIME} ${process.env.TZ}`);
   console.log(`   Check every:   ${intervalMin} minutes\n`);
 
