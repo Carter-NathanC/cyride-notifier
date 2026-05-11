@@ -13,6 +13,24 @@ async function fetchShifts() {
   return data;
 }
 
+// ── Timezone safe value extractor ──────────────────────────────────────────────
+// This safely extracts the local wall-clock time from a date object for the 
+// timezone specified in your .env file, ignoring server/UTC discrepancies.
+const tzFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: TZ,
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: 'numeric', minute: 'numeric', hourCycle: 'h23'
+});
+
+function getLocalValues(dateObj) {
+  const parts = tzFormatter.formatToParts(dateObj);
+  const val = (type) => parts.find(p => p.type === type).value;
+  return {
+    y: val('year'), mo: val('month'), d: val('day'),
+    h: val('hour').padStart(2, '0'), m: val('minute').padStart(2, '0')
+  };
+}
+
 // ── ICS Calendar Handling ─────────────────────────────────────────────────────
 
 async function fetchIcsEvents() {
@@ -41,16 +59,18 @@ async function fetchIcsEvents() {
       const summary = ev.summary || 'Busy';
 
       if (ev.rrule) {
-        // Expand recurring events
-        const dates = ev.rrule.between(rangeStart, rangeEnd);
+        // Find the exact wall-clock hour and minute the original event was created for
+        const origLocal = getLocalValues(ev.start);
         const duration = ev.end.getTime() - ev.start.getTime();
+        const dates = ev.rrule.between(rangeStart, rangeEnd);
         
         for (const date of dates) {
-          // FIX FOR DST 1-HOUR SHIFT:
-          // node-ical's rrule returns dates where the UTC time components mirror the original local time.
-          // By taking the raw ISO string (e.g. "2024-05-11T09:00:00") and forcing it into our 
-          // timezone via fromZonedTime, we perfectly bypass all Daylight Saving boundary glitches.
-          const localIso = date.toISOString().substring(0, 19); 
+          // Find what day the recurrence lands on
+          const occurLocal = getLocalValues(date);
+          
+          // Force it to happen at the exact same local hour/minute as the original event.
+          // This safely bypasses all Daylight Saving Time shifts and 4-hour UTC offsets.
+          const localIso = `${occurLocal.y}-${occurLocal.mo}-${occurLocal.d}T${origLocal.h}:${origLocal.m}:00`;
           const correctedStart = fromZonedTime(localIso, TZ);
           
           events.push({
