@@ -59,18 +59,22 @@ async function fetchIcsEvents() {
       const summary = ev.summary || 'Busy';
 
       if (ev.rrule) {
-        // Find the exact wall-clock hour and minute the original event was created for
+        // Find the exact local wall-clock hour and minute the original event was created for
         const origLocal = getLocalValues(ev.start);
-        const duration = ev.end.getTime() - ev.start.getTime();
+        const duration = (ev.end ? ev.end.getTime() : ev.start.getTime()) - ev.start.getTime();
         const dates = ev.rrule.between(rangeStart, rangeEnd);
         
         for (const date of dates) {
-          // Find what day the recurrence lands on
-          const occurLocal = getLocalValues(date);
+          // FIX: rrule ignores timezones and generates occurrences where the UTC day 
+          // matches the BYDAY rule. Because evening local times cross the UTC midnight 
+          // boundary, converting the generated date normally shifts it backwards by a day.
+          // Solution: Extract the UTC components directly—they represent the intended local day!
+          const y = date.getUTCFullYear();
+          const mo = String(date.getUTCMonth() + 1).padStart(2, '0');
+          const d = String(date.getUTCDate()).padStart(2, '0');
           
-          // Force it to happen at the exact same local hour/minute as the original event.
-          // This safely bypasses all Daylight Saving Time shifts and 4-hour UTC offsets.
-          const localIso = `${occurLocal.y}-${occurLocal.mo}-${occurLocal.d}T${origLocal.h}:${origLocal.m}:00`;
+          // Re-assemble it using the intended local day + original local time
+          const localIso = `${y}-${mo}-${d}T${origLocal.h}:${origLocal.m}:00`;
           const correctedStart = fromZonedTime(localIso, TZ);
           
           events.push({
