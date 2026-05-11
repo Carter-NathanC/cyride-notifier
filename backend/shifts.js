@@ -51,7 +51,7 @@ async function fetchIcsEvents() {
       const ev = data[k];
       if (ev.type !== 'VEVENT') continue;
       
-      // Skip events explicitly marked as "Free"
+      // Skip events explicitly marked as "Free" in Google Calendar
       if (ev.transparency === 'TRANSPARENT') continue;
 
       const summary = ev.summary || 'Busy';
@@ -61,21 +61,29 @@ async function fetchIcsEvents() {
         const duration = (ev.end ? ev.end.getTime() : ev.start.getTime()) - ev.start.getTime();
         const dates = ev.rrule.between(rangeStart, rangeEnd);
         
-        // Google calendar logs deleted recurring instances in exdate
-        const exdateKeys = Object.keys(ev.exdate || {});
+        // Google Calendar tracks deleted/moved instances via EXDATE and RECURRENCES.
+        // We collect the exact absolute UTC timestamps of these exceptions to perfectly filter them.
+        const exceptionTimes = new Set();
+        Object.values(ev.exdate || {}).forEach(d => {
+          if (d && !isNaN(d.getTime())) exceptionTimes.add(d.getTime());
+        });
+        Object.keys(ev.recurrences || {}).forEach(key => {
+          const d = new Date(key);
+          if (!isNaN(d.getTime())) exceptionTimes.add(d.getTime());
+        });
         
         for (const date of dates) {
           const y = date.getUTCFullYear();
           const mo = String(date.getUTCMonth() + 1).padStart(2, '0');
           const d = String(date.getUTCDate()).padStart(2, '0');
           
-          // Check if this specific instance was deleted/cancelled in google calendar
-          const isExcluded = exdateKeys.some(k => k.startsWith(`${y}-${mo}-${d}`));
-          if (isExcluded) continue;
-
           const localIso = `${y}-${mo}-${d}T${origLocal.h}:${origLocal.m}:00`;
           const correctedStart = fromZonedTime(localIso, TZ);
           
+          // Ghost Event Fix: If the absolute timestamp of this instance is in the exceptions list, 
+          // it means you deleted or moved it in Google Calendar. Skip it!
+          if (exceptionTimes.has(correctedStart.getTime())) continue;
+
           events.push({
             start: correctedStart,
             end: new Date(correctedStart.getTime() + duration),
@@ -83,7 +91,7 @@ async function fetchIcsEvents() {
           });
         }
       } else {
-        // Standard one-off event
+        // Standard one-off events OR single overridden recurring instances (e.g. moved just for this week)
         if (ev.end > rangeStart && ev.start < rangeEnd) {
           events.push({ start: ev.start, end: ev.end, summary });
         }
@@ -142,7 +150,7 @@ function buildShiftDate(dateStr, timeStr) {
   let [h, m] = timeStr.split(':').map(Number);
   let isNextDay = false;
 
-  // Handle CyRide overnight shift formats (e.g. 25:30 or 01:30)
+  // CyRide Overnight formats (e.g. 25:30) roll into the next physical day
   if (h >= 24) {
     h -= 24;
     isNextDay = true;
@@ -171,47 +179,63 @@ function shiftFitsSchedule(shift, icsEvents) {
   const shiftEnd = buildShiftDate(shift.date, shift.end);
   if (!shiftStart || !shiftEnd) return false;
 
-  // 1. Direct Overlap Check
+  // 0. Direct Overlap Check
   const hasConflict = icsEvents.some(ev => shiftStart < ev.end && shiftEnd > ev.start);
   if (hasConflict) return false;
 
-  // CyRide Transit Day Window (6AM today -> 6AM tomorrow)
+  // Get CyRide Transit Day Window (6AM today -> 6AM tomorrow)
   const busDayStart = fromZonedTime(`${shift.date}T06:00:00`, TZ);
   const busDayEnd = new Date(busDayStart.getTime() + 24 * 3600 * 1000);
 
   // Grab all events occurring during this specific transit day
   const dayEvents = icsEvents.filter(ev => ev.start < busDayEnd && ev.end > busDayStart);
   
-  // Combine existing calendar events + the candidate shift, sort by time
+  // Combine existing calendar events + the candidate shift, sort by chronological time
   const allActivities = [...dayEvents, { start: shiftStart, end: shiftEnd }].sort((a, b) => a.start - b.start);
 
-  // 2. Rule: Max 10.5 hours of total time in one day
-  const totalMs = allActivities.reduce((sum, ev) => sum + (ev.end - ev.start), 0);
-  if (totalMs > 10.5 * 3600 * 1000) return false;
-
-  // 3. Rule: Max 16 hours spread (Start of first to end of last)
-  const spreadMs = Math.max(...allActivities.map(e => e.end)) - Math.min(...allActivities.map(e => e.start));
-  if (spreadMs > 16 * 3600 * 1000) return false;
-
-  // 4. Rule: Max 6 hours without at least a 30-minute break
-  let currentBlock = { start: allActivities[0].start, end: allActivities[0].end };
+  // 1. Strict Overlap Merge (Prevent double-counting overlapping classes for daily limits)
+  const strictBlocks = [];
+  let sCurr = { start: allActivities[0].start, end: allActivities[0].end };
   for (let i = 1; i < allActivities.length; i++) {
     const ev = allActivities[i];
-    const gap = ev.start - currentBlock.end;
-    
-    if (gap < 30 * 60 * 1000) { // Gap is less than 30 mins, merge the continuous block
-      currentBlock.end = new Date(Math.max(currentBlock.end, ev.end));
+    if (ev.start <= sCurr.end) {
+      sCurr.end = new Date(Math.max(sCurr.end.getTime(), ev.end.getTime()));
     } else {
-      // Gap is 30+ mins (valid break). First, check if the preceding block violated the 6 hr limit
-      if (currentBlock.end - currentBlock.start > 6 * 3600 * 1000) return false;
-      // Start tracking the new block
-      currentBlock = { start: ev.start, end: ev.end };
+      strictBlocks.push(sCurr);
+      sCurr = { start: ev.start, end: ev.end };
     }
   }
-  // Check the final block
-  if (currentBlock.end - currentBlock.start > 6 * 3600 * 1000) return false;
+  strictBlocks.push(sCurr);
 
-  // 5. Rule: Minimum 9 hours overnight between shifts
+  // Rule: Max 10.5 hours of total busy time
+  const totalMs = strictBlocks.reduce((sum, b) => sum + (b.end - b.start), 0);
+  if (totalMs > 10.5 * 3600 * 1000) return false;
+
+  // Rule: Max 16 hours spread (Start of first activity to end of last activity)
+  const spreadMs = strictBlocks[strictBlocks.length - 1].end - strictBlocks[0].start;
+  if (spreadMs > 16 * 3600 * 1000) return false;
+
+  // 2. 30-Min Gap Merge (for continuous work limits)
+  const continuousBlocks = [];
+  let cCurr = { start: allActivities[0].start, end: allActivities[0].end };
+  for (let i = 1; i < allActivities.length; i++) {
+    const ev = allActivities[i];
+    // If the gap is less than 30 mins, it's NOT a valid break, so merge them into a single continuous block
+    if (ev.start - cCurr.end < 30 * 60 * 1000) { 
+      cCurr.end = new Date(Math.max(cCurr.end.getTime(), ev.end.getTime()));
+    } else {
+      continuousBlocks.push(cCurr);
+      cCurr = { start: ev.start, end: ev.end };
+    }
+  }
+  continuousBlocks.push(cCurr);
+
+  // Rule: Max 6 hours without at least a 30-minute break
+  for (const b of continuousBlocks) {
+    if (b.end - b.start > 6 * 3600 * 1000) return false;
+  }
+
+  // 3. Minimum 9 hours overnight rest
   const dayStartMs = allActivities[0].start.getTime();
   const dayEndMs = allActivities[allActivities.length - 1].end.getTime();
 
