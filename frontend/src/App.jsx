@@ -15,6 +15,15 @@ function routeColor(route) {
   return '#6b7280';
 }
 
+function formatAmPm(timeStr) {
+  if (!timeStr) return '';
+  let [h, m] = timeStr.split(':').map(Number);
+  if (h >= 24) h -= 24; // Handle CyRide overnight formats like 25:30
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 export default function App() {
   const [calendar, setCalendar] = useState(null);
   const [shifts, setShifts]     = useState(null);
@@ -97,8 +106,8 @@ export default function App() {
         {!loading && tab === 'calendar' && calendar && (
           <div>
             <div style={styles.infoBox}>
-              <strong>Calendar Synced:</strong> Your availability is automatically calculated from the `.ics` link in your backend settings.
-              Shifts that overlap with the "Busy" events below are hidden. Events marked "Free" do not block shifts.
+              <strong>Calendar Synced:</strong> Your availability is calculated from Google Calendar.
+              Shifts are hidden if they conflict with these events, exceed 10.5 total hours, exceed a 16-hour spread, run 6 hours without a 30m break, or violate a 9-hour overnight rest.
             </div>
 
             <div style={styles.dayGrid}>
@@ -134,7 +143,7 @@ export default function App() {
               <div style={styles.empty}>
                 No open shifts fit your current schedule.<br />
                 <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                  All open shifts overlap with your calendar events.
+                  All open shifts overlap with calendar events or violate shift scheduling rules.
                 </span>
               </div>
             ) : (
@@ -157,7 +166,7 @@ export default function App() {
                           )}
                         </div>
                         <div style={styles.shiftTime}>
-                          {s.start} → {s.end}
+                          {formatAmPm(s.start)} → {formatAmPm(s.end)}
                         </div>
                         <div style={styles.shiftHours}>{s.hours}h</div>
                       </div>
