@@ -43,7 +43,7 @@ app.get('/api/shifts', async (req, res) => {
   try {
     const data     = await shifts.fetchShifts();
     const schedule = db.getSchedule();
-    const filtered = shifts.getFilteredShifts(data, schedule);
+    const filtered = await shifts.getFilteredShifts(data, schedule);
     res.json(filtered);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -73,7 +73,7 @@ async function sendDailyDigest() {
   console.log('[cron] Running daily digest...');
   const data     = await shifts.fetchShifts();
   const schedule = db.getSchedule();
-  const filtered = shifts.getFilteredShifts(data, schedule);
+  const filtered = await shifts.getFilteredShifts(data, schedule);
 
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', {
@@ -94,7 +94,7 @@ async function checkNewShifts() {
     const data     = await shifts.fetchShifts();
     const schedule = db.getSchedule();
 
-    const newOnes = shifts.getNewShifts(data, schedule, db);
+    const newOnes = await shifts.getNewShifts(data, schedule, db);
     const count   = Object.values(newOnes).reduce((n, arr) => n + arr.length, 0);
 
     if (count > 0) {

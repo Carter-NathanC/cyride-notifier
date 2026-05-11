@@ -62,19 +62,23 @@ function defaultSchedule() {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [schedule, setSchedule]     = useState(defaultSchedule());
+  const [icsUrl, setIcsUrl]         = useState('');
   const [preview, setPreview]       = useState(null);
   const [loading, setLoading]       = useState(false);
   const [saving, setSaving]         = useState(false);
   const [toast, setToast]           = useState(null);
-  const [tab, setTab]               = useState('schedule'); // 'schedule' | 'preview'
+  const [tab, setTab]               = useState('schedule');
 
   // Load saved schedule
   useEffect(() => {
     fetch('/api/schedule')
       .then(r => r.json())
       .then(data => {
-        if (Object.keys(data).length > 0) {
-          setSchedule(s => ({ ...defaultSchedule(), ...data }));
+        if (data.icsUrl) setIcsUrl(data.icsUrl);
+        const sched = { ...data };
+        delete sched.icsUrl; // Separate URL from days
+        if (Object.keys(sched).length > 0) {
+          setSchedule(s => ({ ...defaultSchedule(), ...sched }));
         }
       })
       .catch(() => {});
@@ -91,12 +95,12 @@ export default function App() {
       await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(schedule),
+        body: JSON.stringify({ ...schedule, icsUrl }),
       });
       showToast('Schedule saved!');
     } catch { showToast('Failed to save', 'error'); }
     setSaving(false);
-  }, [schedule]);
+  }, [schedule, icsUrl]);
 
   const loadPreview = useCallback(async () => {
     setLoading(true);
@@ -155,7 +159,6 @@ export default function App() {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div style={styles.app}>
-      {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerInner}>
           <div style={styles.logo}>
@@ -193,11 +196,29 @@ export default function App() {
         {tab === 'schedule' && (
           <div>
             <div style={styles.infoBox}>
-              <strong>How it works:</strong> Enable the days you're available and set your available time windows.
-              Shifts that start <em>and</em> end within your windows will be included in notifications.
-              Days run <strong>6:00 AM → 5:59 AM</strong> the next morning to accommodate overnight shifts.
+              <strong>How it works:</strong> Set your overall working availability using the toggles below. 
+              By pasting your <strong>Google Calendar ICS Link</strong>, the system will automatically hide shifts that conflict with any of your classes or events.
             </div>
 
+            {/* Calendar Link Section */}
+            <div style={{ ...styles.dayCard, marginBottom: 24, padding: '24px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <span style={{ fontSize: 20 }}>📅</span>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Google Calendar Sync</h3>
+              </div>
+              <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.5 }}>
+                To get your secret iCal link in Google Calendar: Settings &gt; Your Calendar &gt; "Secret address in iCal format".
+              </p>
+              <input 
+                type="text" 
+                placeholder="https://calendar.google.com/calendar/ical/.../basic.ics"
+                value={icsUrl}
+                onChange={(e) => setIcsUrl(e.target.value)}
+                style={styles.textInput}
+              />
+            </div>
+
+            <h3 style={{ fontSize: 18, marginBottom: 16, color: 'var(--text)' }}>Base Availability</h3>
             <div style={styles.dayGrid}>
               {DAYS.map(({ key, label }) => {
                 const day = schedule[key] || defaultDay();
@@ -399,6 +420,17 @@ const styles = {
     background: 'var(--surface)', border: '1px solid var(--border)',
     borderRadius: 10, padding: '14px 20px', marginBottom: 28,
     fontSize: 14, lineHeight: 1.7, color: 'var(--muted)',
+  },
+
+  textInput: {
+    width: '100%',
+    padding: '12px 14px',
+    borderRadius: '8px',
+    border: '1px solid var(--border)',
+    background: 'var(--surface2)',
+    color: 'var(--text)',
+    fontFamily: 'var(--mono)',
+    fontSize: '14px'
   },
 
   dayGrid: {

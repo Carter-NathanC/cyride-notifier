@@ -14,64 +14,64 @@ function createTransport() {
   });
 }
 
-// ── Format a single shift as an HTML table row ────────────────────────────────
+// ── Format a single shift for mobile viewing ──────────────────────────────────
 
-function shiftRow(s, bgColor) {
-  const overtime = s.overtime
-    ? '<span style="color:#e55;font-weight:bold;">YES</span>'
-    : '<span style="color:#888;">No</span>';
+function shiftBlock(s) {
+  const overtimeBadge = s.overtime
+    ? `<span style="background: #fee2e2; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px;">OVERTIME</span>`
+    : '';
+    
   return `
-    <tr style="background:${bgColor};">
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${s.run}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${s.route || '—'}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${s.start || '—'}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${s.end || '—'}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${s.hours}h</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">${overtime}</td>
-    </tr>`;
+    <div style="background: #ffffff; border-left: 4px solid #c8102e; border-radius: 6px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+      <div style="font-size: 16px; font-weight: bold; color: #1a1a1a; margin-bottom: 6px;">
+        Run ${s.run} <span style="font-weight: normal; color: #666;">(${s.route || '—'})</span>
+        ${overtimeBadge}
+      </div>
+      <div style="color: #444; font-size: 14px; display: flex; align-items: center;">
+        <span style="font-family: monospace; font-size: 15px;">${s.start} - ${s.end}</span> 
+        <span style="color: #888; margin-left: 6px;">(${s.hours}h)</span>
+      </div>
+    </div>`;
 }
 
-// ── Build full HTML email ─────────────────────────────────────────────────────
+// ── Build full HTML email (Text/Mobile focused) ───────────────────────────────
 
 function buildEmailHtml(shiftsByDay, subject) {
   const dayBlocks = Object.entries(shiftsByDay)
     .filter(([, shifts]) => shifts.length > 0)
     .map(([dayLabel, shifts]) => {
-      const rows = shifts.map((s, i) => shiftRow(s, i % 2 === 0 ? '#ffffff' : '#f9f9f9')).join('');
+      const blocks = shifts.map(s => shiftBlock(s)).join('');
       return `
-        <h2 style="margin:32px 0 8px;color:#c8102e;font-family:Georgia,serif;border-bottom:2px solid #c8102e;padding-bottom:6px;">
-          ${dayLabel}
-        </h2>
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;">
-          <thead>
-            <tr style="background:#c8102e;color:#fff;">
-              <th style="padding:8px 12px;text-align:left;">Run</th>
-              <th style="padding:8px 12px;text-align:left;">Route</th>
-              <th style="padding:8px 12px;text-align:left;">Start</th>
-              <th style="padding:8px 12px;text-align:left;">End</th>
-              <th style="padding:8px 12px;text-align:left;">Hours</th>
-              <th style="padding:8px 12px;text-align:left;">Overtime</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>`;
+        <div style="margin-top: 24px; margin-bottom: 8px;">
+          <h2 style="margin: 0; padding-bottom: 6px; font-size: 18px; color: #c8102e; border-bottom: 2px solid #f0f0f0;">
+            ${dayLabel}
+          </h2>
+        </div>
+        ${blocks}
+      `;
     }).join('');
 
   return `
     <!DOCTYPE html>
     <html>
-    <body style="margin:0;padding:0;background:#f4f4f4;">
-      <div style="max-width:680px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.12);">
-        <div style="background:#c8102e;padding:24px 32px;">
-          <h1 style="margin:0;color:#fff;font-family:Georgia,serif;font-size:22px;">🚌 CyRide Open Shifts</h1>
-          <p style="margin:4px 0 0;color:rgba(255,255,255,.8);font-size:13px;">${subject}</p>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin:0; padding:0; background:#f4f4f9; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+      <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        
+        <div style="margin-bottom: 20px;">
+          <h1 style="margin: 0; font-size: 22px; color: #c8102e;">🚌 CyRide Open Shifts</h1>
+          <p style="margin: 4px 0 0 0; color: #555; font-size: 14px;">${subject}</p>
         </div>
-        <div style="padding:24px 32px;">
-          ${dayBlocks || '<p style="color:#888;">No matching open shifts found.</p>'}
+
+        ${dayBlocks || '<p style="color: #888; font-size: 15px; padding: 20px; text-align: center; background: #fff; border-radius: 6px;">No matching open shifts found.</p>'}
+        
+        <div style="margin-top: 30px; text-align: center; font-size: 12px; color: #aaa;">
+          Sent by CyRide Notifier<br>
+          <a href="http://localhost:${process.env.WEB_PORT || 3000}" style="color: #c8102e; text-decoration: none; margin-top: 6px; display: inline-block;">Update Availability</a>
         </div>
-        <div style="background:#f4f4f4;padding:16px 32px;text-align:center;font-size:12px;color:#aaa;">
-          Sent by CyRide Notifier · <a href="http://localhost:${process.env.WEB_PORT || 3000}" style="color:#c8102e;">Manage Preferences</a>
-        </div>
+        
       </div>
     </body>
     </html>`;
