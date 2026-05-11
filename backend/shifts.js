@@ -27,7 +27,7 @@ async function fetchIcsEvents() {
     const events = [];
     const now = new Date();
     
-    // Look back 1 day and forward 14 days to handle timezone/overnight edge cases safely
+    // Look back 1 day and forward 14 days
     const rangeStart = new Date(now.getTime() - 24 * 3600 * 1000);
     const rangeEnd = new Date(now.getTime() + 14 * 24 * 3600 * 1000);
 
@@ -44,10 +44,18 @@ async function fetchIcsEvents() {
         // Expand recurring events
         const dates = ev.rrule.between(rangeStart, rangeEnd);
         const duration = ev.end.getTime() - ev.start.getTime();
+        
         for (const date of dates) {
+          // FIX FOR DST 1-HOUR SHIFT:
+          // node-ical's rrule returns dates where the UTC time components mirror the original local time.
+          // By taking the raw ISO string (e.g. "2024-05-11T09:00:00") and forcing it into our 
+          // timezone via fromZonedTime, we perfectly bypass all Daylight Saving boundary glitches.
+          const localIso = date.toISOString().substring(0, 19); 
+          const correctedStart = fromZonedTime(localIso, TZ);
+          
           events.push({
-            start: date,
-            end: new Date(date.getTime() + duration),
+            start: correctedStart,
+            end: new Date(correctedStart.getTime() + duration),
             summary
           });
         }
@@ -64,7 +72,7 @@ async function fetchIcsEvents() {
     return events;
   } catch (e) {
     console.error("[shifts] Failed to fetch/parse ICS:", e.message);
-    return []; // Fail open: if calendar is temporarily broken, don't crash
+    return []; 
   }
 }
 
@@ -93,7 +101,6 @@ async function getGroupedCalendar() {
 
   for (const ev of events) {
     const dateStr = formatDateNative(ev.start);
-    // Only add to group if it falls within the next 7 days we prepared
     if (grouped[dateStr]) {
       grouped[dateStr].push({
         startStr: formatTimeNative(ev.start),
@@ -111,7 +118,7 @@ function buildShiftDate(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
   const [y, mo, d] = dateStr.split('-').map(Number);
   let [h, m] = timeStr.split(':').map(Number);
-  let isNextDay = h < 6; // Times before 6AM roll over to the next day's morning
+  let isNextDay = h < 6; 
 
   const pad = (n) => String(n).padStart(2, '0');
   const localIso = `${y}-${pad(mo)}-${pad(d)}T${pad(h)}:${pad(m)}:00`;
@@ -127,10 +134,9 @@ function buildShiftDate(dateStr, timeStr) {
 
 function shiftFitsSchedule(shift, icsEvents) {
   if (!shift.driver || shift.driver !== '**OPEN**') return false;
-  if (shift.priority >= 3) return false; // Ignore internal placeholders
+  if (shift.priority >= 3) return false; 
   if (!shift.start || !shift.end || !shift.date) return false;
 
-  // If ICS events exist, ensure there are no overlapping busy blocks
   if (icsEvents && icsEvents.length > 0) {
     const shiftStart = buildShiftDate(shift.date, shift.start);
     const shiftEnd = buildShiftDate(shift.date, shift.end);
@@ -142,10 +148,10 @@ function shiftFitsSchedule(shift, icsEvents) {
       return shiftStart < ev.end && shiftEnd > ev.start;
     });
 
-    if (hasConflict) return false; // Calendar says busy!
+    if (hasConflict) return false; 
   }
 
-  return true; // No calendar conflicts found
+  return true; 
 }
 
 // ── Get next 7 days of open shifts filtered by calendar ──────────────────────

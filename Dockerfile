@@ -12,6 +12,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# IMPORTANT: Install tzdata so Alpine Linux understands timezones (fixes DST bugs)
+RUN apk add --no-cache tzdata
+
 # Install backend deps
 COPY backend/package*.json ./backend/
 RUN cd backend && npm install --omit=dev
