@@ -47,8 +47,24 @@ app.get('/api/shifts', async (req, res) => {
 // POST /api/test-email — send a test digest immediately
 app.post('/api/test-email', async (req, res) => {
   try {
-    await sendDailyDigest();
-    res.json({ ok: true, message: 'Test email sent!' });
+    const data = await shifts.fetchShifts();
+    const filtered = await shifts.getFilteredShifts(data);
+    const count = Object.values(filtered).reduce((n, arr) => n + arr.length, 0);
+
+    if (count === 0) {
+      // If no shifts are available, force a basic text message to verify credentials work
+      const transport = mailer.createTransport();
+      await transport.sendMail({
+        from: `"CyRide Notifier" <${process.env.ZOHO_FROM_EMAIL}>`,
+        to: process.env.RECIPIENT_EMAIL,
+        subject: `CyRide: Test Setup`,
+        text: "Your SMS text configuration is working! There are currently 0 open shifts that match your schedule.",
+      });
+    } else {
+      await sendDailyDigest();
+    }
+    
+    res.json({ ok: true, message: 'Test message sent!' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -67,18 +83,22 @@ async function sendDailyDigest() {
   console.log('[cron] Running daily digest...');
   const data = await shifts.fetchShifts();
   const filtered = await shifts.getFilteredShifts(data);
+  const count = Object.values(filtered).reduce((n, arr) => n + arr.length, 0);
 
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric',
-    timeZone: process.env.TZ || 'America/Chicago'
-  });
+  if (count > 0) {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'numeric', day: 'numeric',
+      timeZone: process.env.TZ || 'America/Chicago'
+    });
 
-  await mailer.sendEmail(`Daily Digest — ${dateStr}`, filtered);
+    await mailer.sendEmail(`Daily Digest ${dateStr}`, filtered);
+  } else {
+    console.log('[cron] No shifts for daily digest. Skipping message.');
+  }
 
   // After digest, mark everything as seen so new-shift checks start fresh
   shifts.markAllSeen(data, db);
-  console.log('[cron] Daily digest sent.');
 }
 
 async function checkNewShifts() {
@@ -90,8 +110,8 @@ async function checkNewShifts() {
     const count = Object.values(newOnes).reduce((n, arr) => n + arr.length, 0);
 
     if (count > 0) {
-      console.log(`[cron] Found ${count} new shift(s), sending email...`);
-      await mailer.sendEmail(`🆕 ${count} New Open Shift${count > 1 ? 's' : ''} Available!`, newOnes);
+      console.log(`[cron] Found ${count} new shift(s), sending text...`);
+      await mailer.sendEmail(`${count} New Shift${count > 1 ? 's' : ''}!`, newOnes);
 
       // Mark new ones as notified+seen
       for (const [, shiftList] of Object.entries(newOnes)) {
@@ -112,7 +132,7 @@ async function checkNewShifts() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  CRON SCHEDULES
+//  SCHEDULING
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Daily digest at 20:30 (configurable via DAILY_DIGEST_TIME)
@@ -121,11 +141,10 @@ const digestCron = `${digestMin} ${digestHour} * * *`;
 console.log(`[cron] Daily digest scheduled: ${digestCron} (${process.env.TZ})`);
 cron.schedule(digestCron, sendDailyDigest, { timezone: process.env.TZ || 'America/Chicago' });
 
-// New-shift check every N minutes
-const intervalMin = parseInt(process.env.CHECK_INTERVAL_MINUTES || '10');
-const checkCron = `*/${intervalMin} * * * *`;
-console.log(`[cron] New-shift check scheduled every ${intervalMin} minutes`);
-cron.schedule(checkCron, checkNewShifts);
+// New-shift check every X seconds
+const intervalSec = parseInt(process.env.CHECK_INTERVAL_SECONDS || '45', 10);
+console.log(`[cron] New-shift check scheduled every ${intervalSec} seconds`);
+setInterval(checkNewShifts, intervalSec * 1000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  STARTUP
@@ -137,7 +156,7 @@ app.listen(PORT, () => {
   console.log(`   Sending from:  ${process.env.ZOHO_FROM_EMAIL}`);
   console.log(`   ICS Calendar:  ${process.env.ICS_URL ? 'Configured' : 'MISSING!'}`);
   console.log(`   Digest at:     ${process.env.DAILY_DIGEST_TIME} ${process.env.TZ}`);
-  console.log(`   Check every:   ${intervalMin} minutes\n`);
+  console.log(`   Check every:   ${intervalSec} seconds\n`);
 
   // Initial check on startup (no email, just populate seen-shifts cache)
   shifts.fetchShifts()
