@@ -206,7 +206,29 @@ The notifier automatically filters out internal/placeholder shifts:
 | `ZOHO_SMTP_PORT` | `587` | SMTP port |
 | `CYRIDE_JSON_URL` | `https://cyride.net/sync/open.json` | Data source |
 | `WEB_PORT` | `3000` | Web UI port |
-| `CHECK_INTERVAL_MINUTES` | `10` | How often to check for new shifts |
+| `CHECK_INTERVAL_SECONDS` | `10` | How often to check for new shifts |
 | `DAILY_DIGEST_TIME` | `20:30` | Daily digest send time (24h) |
 | `TZ` | `America/Chicago` | Your timezone |
 | `SECRET_KEY` | — | Session secret (change this!) |
+
+
+---
+```
+# 📱 Your SMS Gateway Address 
+# e.g., Verizon: 1234567890@vtext.com 
+# T-Mobile: 1234567890@tmomail.net 
+# AT&T: 1234567890@txt.att.net
+RECIPIENT_EMAIL=1234567890@vtext.com
+
+# Zoho sender account
+ZOHO_FROM_EMAIL=noreply@yourdomain.com
+ZOHO_PASSWORD=your_zoho_app_password
+
+# Link to your Google Calendar ICS file
+ICS_URL=[https://calendar.google.com/calendar/ical/your_email/private-xxx/basic.ics](https://calendar.google.com/calendar/ical/your_email/private-xxx/basic.ics)
+
+# Timing Configuration
+CHECK_INTERVAL_SECONDS=45
+DAILY_DIGEST_TIME=20:30
+TZ=America/Chicago
+```
